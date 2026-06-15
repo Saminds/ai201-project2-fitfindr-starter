@@ -18,9 +18,9 @@ Usage (once implemented):
     print(result["error"])   # None on success
 """
 
+import re
+
 from tools import search_listings, suggest_outfit, create_fit_card
-
-
 # ── session state ─────────────────────────────────────────────────────────────
 
 def _new_session(query: str, wardrobe: dict) -> dict:
@@ -46,7 +46,58 @@ def _new_session(query: str, wardrobe: dict) -> dict:
 
 
 # ── planning loop ─────────────────────────────────────────────────────────────
+def _parse_query(query: str) -> dict:
+    """
+    Extract description, size, and max_price from the user's natural language query.
+    This is a simple rule-based parser for the project demo.
+    """
 
+    query_lower = query.lower()
+
+    # Find max price from phrases like "under $30", "$30", or "under 30"
+    max_price = None
+    price_match = re.search(r"(?:under\s*)?\$?(\d+(?:\.\d+)?)", query_lower)
+    if price_match:
+        max_price = float(price_match.group(1))
+
+    # Find size from phrases like "size M" or "size XXS"
+    size = None
+    size_match = re.search(r"size\s+([a-zA-Z0-9/]+)", query_lower)
+    if size_match:
+        size = size_match.group(1).upper()
+
+    # Remove price and size phrases to create a cleaner description
+    description = query_lower
+    description = re.sub(r"under\s*\$?\d+(?:\.\d+)?", "", description)
+    description = re.sub(r"\$?\d+(?:\.\d+)?", "", description)
+    description = re.sub(r"size\s+[a-zA-Z0-9/]+", "", description)
+
+    # Remove common filler words
+    filler_phrases = [
+        "looking for",
+        "i am",
+        "i'm",
+        "find me",
+        "can you find",
+        "what's out there",
+        "what is out there",
+        "and how would i style it",
+        "how would i style it",
+    ]
+
+    for phrase in filler_phrases:
+        description = description.replace(phrase, "")
+
+    description = description.strip(" ,.?")
+
+    if not description:
+        description = query
+
+    return {
+        "description": description,
+        "size": size,
+        "max_price": max_price,
+    }
 def run_agent(query: str, wardrobe: dict) -> dict:
     """
     Main agent entry point. Runs the FitFindr planning loop for a single
@@ -92,11 +143,59 @@ def run_agent(query: str, wardrobe: dict) -> dict:
     Before writing code, complete the Planning Loop and State Management sections
     of planning.md — your implementation should match what you described there.
     """
-    # TODO: implement the planning loop
+    # Step 1: Initialize session
     session = _new_session(query, wardrobe)
-    session["error"] = "Planning loop not yet implemented."
-    return session
 
+    # Step 2: Parse query
+    parsed = _parse_query(query)
+    session["parsed"] = parsed
+
+    description = parsed["description"]
+    size = parsed["size"]
+    max_price = parsed["max_price"]
+
+    # Step 3: Search listings
+    results = search_listings(
+        description=description,
+        size=size,
+        max_price=max_price,
+    )
+
+    session["search_results"] = results
+
+    # If no results, stop early
+    if not results:
+        session["error"] = (
+            f"No listings found for '{description}'. "
+            "Try using a broader description, increasing your budget, "
+            "or removing the size filter."
+        )
+        return session
+
+    # Step 4: Select top item
+    selected_item = results[0]
+    session["selected_item"] = selected_item
+
+    # Step 5: Suggest outfit
+    outfit_suggestion = suggest_outfit(selected_item, wardrobe)
+    session["outfit_suggestion"] = outfit_suggestion
+
+    if not outfit_suggestion or not outfit_suggestion.strip():
+        session["error"] = (
+            "A listing was found, but the agent could not create an outfit suggestion."
+        )
+        return session
+
+    if outfit_suggestion.startswith("I could not generate"):
+        session["error"] = outfit_suggestion
+        return session
+
+    # Step 6: Create fit card
+    fit_card = create_fit_card(outfit_suggestion, selected_item)
+    session["fit_card"] = fit_card
+
+    # Step 7: Return completed session
+    return session
 
 # ── CLI test ──────────────────────────────────────────────────────────────────
 
